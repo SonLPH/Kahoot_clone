@@ -18,12 +18,6 @@ def on_join_game_error(error_message):
     print("Received 'joinGameError' event:")
     print(error_message)
 
-# @sio.on("waiting_room_updated")
-# def on_waiting_room_update(data):
-#     players = [p["playerName"] for p in data["players"]]
-#     print(f"🔹 Waiting Room Players: {players}")
-#     print("🕑 Waiting for the host to start the game...")
-
 @sio.event
 def connect_error(data):
     print("Failed to connect to the server:", data)
@@ -40,13 +34,6 @@ def on_next_question(data):
     question_index = data["currentQuestionIndex"]
     print(f"\n❓ Question {question_index + 1}: Answer now!")
     print(f"🔹 {data['question']}")
-    # Allow only valid answers (A, B, C, D)
-    # while True:
-    #     answer = input("Enter your answer (A, B, C, D): ").strip().upper()
-    #     if answer in ["A", "B", "C", "D"]:
-    #         break
-    #     print("❌ Invalid choice! Please enter A, B, C, or D.")
-
     print(data["answerList"])
 
     playerAnswer = {
