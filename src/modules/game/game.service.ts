@@ -13,7 +13,6 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Quiz, QuizDocument } from 'src/entities/quiz.entity';
 import { PlayerAnswerDTO } from 'src/dto/game/update-player-result.dto';
-import { EventEmitter2 } from '@nestjs/event-emitter';
 
 @Injectable()
 export class GameService {
@@ -21,7 +20,6 @@ export class GameService {
 
   constructor(
     private gameRepository: GameRepository,
-    private eventEmitter: EventEmitter2,
     @InjectModel(Game.name) private readonly gameModel: Model<GameDocument>,
     @InjectModel(Quiz.name) private readonly quizModel: Model<QuizDocument>,
   ) {}
@@ -39,7 +37,7 @@ export class GameService {
   }
 
   async createGame(
-    createGameDto: CreateGameDTO,
+    createGameDTO: CreateGameDTO,
     hostId: string,
   ): Promise<Game> {
     let flag = false;
@@ -53,7 +51,7 @@ export class GameService {
     }
 
     const game = await this.gameRepository.create(
-      createGameDto,
+      createGameDTO,
       hostId,
       gamePin,
     );
@@ -61,8 +59,6 @@ export class GameService {
     if (!game) {
       throw new BadRequestException('Invalid game data');
     }
-
-    this.eventEmitter.emit('create_game', { game });
     return game;
   }
 
@@ -78,7 +74,7 @@ export class GameService {
     return game;
   }
 
-  async joinGame(gameId: string, addPlayerDto: AddPlayerDTO): Promise<Game> {
+  async joinGame(gameId: string, addPlayerDTO: AddPlayerDTO): Promise<Game> {
     const game = await this.gameRepository.findOne(gameId);
 
     if (!game) {
@@ -89,10 +85,10 @@ export class GameService {
       throw new ForbiddenException('Game already started');
     }
 
-    if (await this.validatePlayer(gameId, addPlayerDto.playerName)) {
+    if (await this.validatePlayer(gameId, addPlayerDTO.playerName)) {
       throw new Error('Player name already exists');
     }
-    return this.gameRepository.addPlayer(gameId, addPlayerDto);
+    return this.gameRepository.addPlayer(gameId, addPlayerDTO);
   }
 
   async validatePlayer(gameId: string, playerName: string): Promise<boolean> {
@@ -100,7 +96,7 @@ export class GameService {
     return game.players.some((player) => player.playerName === playerName);
   }
 
-  async startGame(gameId: string): Promise<Game> {
+  async startGame(gameId: string): Promise<void> {
     const game = await this.gameRepository.findOne(gameId);
 
     if (!game) {
@@ -109,15 +105,9 @@ export class GameService {
 
     game.state = GameState.IN_PROGRESS;
     await game.save();
-
-    this.eventEmitter.emit('start_game', {
-      gameId: gameId,
-    });
-
-    return game;
   }
 
-  async emitNextQuestion(gameId: string): Promise<void> {
+  async emitNextQuestion(gameId: string): Promise<any> {
     const game = await this.gameRepository.findOne(gameId);
 
     if (!game) {
@@ -129,26 +119,11 @@ export class GameService {
     if (!quiz) {
       throw new NotFoundException('Quiz not found');
     }
-
+    if (game.currentQuestionIndex >= quiz.questionList.length) {
+      return;
+    }
     const question = quiz.questionList[game.currentQuestionIndex];
-
-    this.eventEmitter.emit('new_question', {
-      id: gameId,
-      hostId: game.hostId.toString(),
-      questionType: question.questionType,
-      currentQuestionIndex: game.currentQuestionIndex,
-      question: question.question,
-      answerList: question.answerList,
-      timeLimit: question.answerTime * 1000,
-    });
-
-    if (this.timer.has(gameId)) clearTimeout(this.timer.get(gameId));
-
-    const timer = setTimeout(
-      () => this.handleQuestionTimeout(gameId),
-      question.answerTime * 1000,
-    );
-    this.timer.set(gameId, timer);
+    return question;
   }
 
   async nextQuestion(gameId: string) {
@@ -162,12 +137,6 @@ export class GameService {
 
     if (!game) {
       throw new NotFoundException('Game not found');
-    }
-
-    const quiz = await this.quizModel.findById(game.quizId).exec();
-
-    if (game.currentQuestionIndex >= quiz.questionList.length) {
-      return this.finishGame(gameId);
     }
     return this.emitNextQuestion(gameId);
   }
@@ -207,13 +176,7 @@ export class GameService {
       await game.save();
     }
 
-    const topPlayers = await this.showTopPlayers(gameId);
-    const payload = {
-      id: gameId,
-      topPlayers: topPlayers,
-      hostId: game.hostId.toString(),
-    };
-    this.eventEmitter.emit('top_players', payload);
+    return await this.showTopPlayers(gameId);
   }
 
   async showTopPlayers(gameId: string): Promise<any> {
@@ -279,6 +242,20 @@ export class GameService {
     return game.save();
   }
 
+  async getPlayerResults(gameId: string, playerName: string): Promise<any> {
+    const game = await this.gameRepository.findOne(gameId);
+    if (!game) {
+      throw new NotFoundException('Game not found');
+    }
+
+    const player = game.players.find((p) => p.playerName === playerName);
+    if (!player) {
+      throw new NotFoundException('Player not found');
+    }
+
+    return player.results[game.currentQuestionIndex];
+  }
+
   async finishGame(gameId: string) {
     const game = await this.gameRepository.findOne(gameId);
 
@@ -288,23 +265,7 @@ export class GameService {
 
     game.state = GameState.COMPLETED;
     await game.save();
-
-    if (this.timer.has(gameId)) {
-      clearTimeout(this.timer.get(gameId));
-      this.timer.delete(gameId);
-    }
-
-    const topPlayers = game.players
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3);
-
-    const payload = {
-      id: gameId,
-      topPlayers: topPlayers,
-      hostId: game.hostId.toString(),
-    };
-
-    this.eventEmitter.emit('finish_game', payload);
+    return game.players.sort((a, b) => b.score - a.score).slice(0, 3);
   }
 
   async generateGamePin(): Promise<string> {

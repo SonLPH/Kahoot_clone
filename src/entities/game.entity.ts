@@ -53,7 +53,7 @@ export class Game extends Document {
   })
   players: Record<string, any>[];
 
-  @Prop({ default: 0 })
+  @Prop({ default: -1 })
   currentQuestionIndex: number;
 
   @Prop({ default: null })

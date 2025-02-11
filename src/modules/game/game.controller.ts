@@ -9,6 +9,7 @@ import {
   Put,
   Req,
   Res,
+  UseFilters,
   UseGuards,
 } from '@nestjs/common';
 import { InjectConnection } from '@nestjs/mongoose';
@@ -19,8 +20,10 @@ import { CreateGameDTO } from 'src/dto/game/create-game.dto';
 import sendResponse from 'src/utils/send-response';
 import { UpdateGameDTO } from 'src/dto/game/update-game.dto';
 import { JwtAuthGuard } from '../auth/guard/jwt.guard';
+import { AllExceptionsFilter } from 'src/filter/exceptions.filter';
 
 @Controller('game')
+@UseFilters(AllExceptionsFilter)
 export class GameController {
   constructor(
     @InjectConnection() private readonly mongoConnection: Connection,
@@ -90,30 +93,6 @@ export class GameController {
       HttpStatus.NO_CONTENT,
       'Game deleted successfully',
       await this.gameService.deleteGame(id),
-      null,
-    );
-  }
-
-  @Post('/:id/start-game')
-  @UseGuards(JwtAuthGuard)
-  async startGame(@Res() response: Response, @Param('id') id: string) {
-    return sendResponse(
-      response,
-      HttpStatus.OK,
-      'Game started successfully',
-      await this.gameService.startGame(id),
-      null,
-    );
-  }
-
-  @Post('/:id/next-question')
-  @UseGuards(JwtAuthGuard)
-  async nextQuestion(@Res() response: Response, @Param('id') id: string) {
-    return sendResponse(
-      response,
-      HttpStatus.OK,
-      'Next question emitted successfully',
-      await this.gameService.nextQuestion(id),
       null,
     );
   }

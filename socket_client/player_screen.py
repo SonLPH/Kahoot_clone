@@ -1,68 +1,74 @@
+import asyncio
+import random
+import time
 import socketio
 # Create a Socket.IO client instance
 sio = socketio.Client()
 
-PLAYER_NAME_1 = "Alice"
-PLAYER_NAME_2 = "SonLPH"
-PLAYER_NAME_3 = "Bobby"
-GAME_ID_1 = "67a504c943381482f1a59588"
-GAME_ID_2 = "67a8fac6fcd792c7fc992a9f"
+PLAYER_NAME_1 = "Bin"
+GAME_ID_1 = "67ab06b2edb8b333b9555ba0"
 @sio.event
 def connect():
     print("✅ Connected to the server!")
-    print(f"🔹 Joining game as {PLAYER_NAME_2}...")
-    sio.emit("join_game", {"gameId": GAME_ID_2, "playerName": PLAYER_NAME_2})
+    print(f"🔹 Joining game as {PLAYER_NAME_1}...")
+    sio.emit("player_join_room", {"gameId": GAME_ID_1, "playerName": PLAYER_NAME_1})
 
-@sio.on("join_game_error")
-def on_join_game_error(error_message):
-    print("Received 'joinGameError' event:")
+@sio.on("player_join_room_error")
+def on_player_join_room_error(error_message):
+    print("Received 'PLAYER JOIN ROOM ERROR' event:")
     print(error_message)
 
-@sio.event
-def connect_error(data):
-    print("Failed to connect to the server:", data)
+@sio.on('timer_update')
+def on_timer_update(data):
+    print(data)
+    print(f"��� Current timer: {data['timeLeft']} seconds")    
 
-
-
-@sio.on("start_game_error")
-def on_start_game_error(error_message):
-    print("Received'startGameError' event:")
-    print(error_message)
-
-@sio.on("player_new_question")
-def on_next_question(data):
+@sio.on("player_get_question")
+def on_player_get_question(data):
     question_index = data["currentQuestionIndex"]
-    print(f"\n❓ Question {question_index + 1}: Answer now!")
-    print(f"🔹 {data['question']}")
+    print(f"\n�� Question {question_index + 1}: Answer now!")
+    print(f"�� {data['question']}")
     print(data["answerList"])
+    answer = random.choice(["1", "2", "3", "4"])
 
     playerAnswer = {
         "isAnswerd": True,
-        "answer": 2,
-        "time": 1
+        "answer": answer,
+        "time": (int(round(time.time() * 1000)) - data["timeStarted"])/1000
     }
-    print(f"✅ Submitting answer: {2}...")
+    
     sio.emit("player_submit_answer", {
         "gameId": data["id"],
-        "playerName": PLAYER_NAME_2,
+        "playerName": PLAYER_NAME_1,
         "playerAnswer": playerAnswer
     })
+    print(f"�� Submitting answer: {answer}...") 
 
-@sio.on("player_leaderboard_top_5")
-def on_top_players(data):
-    print("\n🏆 Top 5 Players This Round:")
+@sio.on("player_submit_answer_error")
+def on_player_submit_answer_error(error_message):
+    print("Received 'PLAYER SUBMIT ANSWER ERROR' event:")
+    print(error_message)
+
+@sio.on("player_current_leaderboard")
+def on_player_current_leaderboard(data):
+    print("\n�� Current Leaderboard:")
     for index, player in enumerate(data, start=1):
         print(f"  {index}. {player['playerName']} - {player['score']} pts")
-    print("🔄 Waiting for next round...")
+    print("��� Waiting for next round...")
 
+@sio.on("question_time_up")
+def on_question_time_up(data):
+    sio.emit("get_player_result", {"gameId": data["gameId"], "playerName": PLAYER_NAME_1})
 
-@sio.on("player_game_finished")
-def on_game_finished(data):
-    print("\n🎉 Game Over! Here are the top 3 winners:")
+@sio.on("player_result")
+def on_player_result(data):
+    print(data)
+
+@sio.on("player_final_leaderboard")
+def on_player_final_leaderboard(data):
+    print("\n�� Final Leaderboard:")
     for index, player in enumerate(data, start=1):
         print(f"  {index}. {player['playerName']} - {player['score']} pts")
-    print("🚪 Disconnecting...")
-    # sio.disconnect()
 
 @sio.event
 def disconnect():

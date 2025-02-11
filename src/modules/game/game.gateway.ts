@@ -9,136 +9,146 @@ import { Server, Socket } from 'socket.io';
 import { GameService } from './game.service';
 import { AddPlayerDTO } from 'src/dto/game/add-player.dto';
 import { PlayerAnswerDTO } from 'src/dto/game/update-player-result.dto';
-import { OnEvent } from '@nestjs/event-emitter';
+import { SOCKET_EVENT, SOCKET_EVENT_ERROR } from 'src/constants/socket-event';
 
 @WebSocketGateway(4000, { cors: true })
 export class GameGateway {
   @WebSocketServer()
   server: Server;
 
+  private intervals: Map<string, NodeJS.Timeout> = new Map();
+
   constructor(private readonly gameService: GameService) {}
 
-  @OnEvent('create_game')
-  async handleCreateGame(
+  @SubscribeMessage(SOCKET_EVENT.HOST_JOIN_ROOM)
+  async handleHostJoinRoom(
     @MessageBody()
-    data: {
-      game: any;
-    },
+    data: { gameId: string },
+    @ConnectedSocket()
+    client: Socket,
   ) {
-    const hostId = data.game.hostId.toString();
     try {
-      this.server.to(hostId).emit('host_waiting_room_updated', data.game);
+      client.join(data.gameId);
     } catch (error) {
-      console.log(error);
-      this.server.to(hostId).emit('create_game_error', error.message);
+      this.server
+        .to(client.id)
+        .emit(SOCKET_EVENT_ERROR.HOST_JOIN_ROOM_ERROR, error.message);
     }
   }
 
-  @SubscribeMessage('host_join_room')
-  async handleHostJoin(
-    @MessageBody()
-    data: { hostId: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    try {
-      client.join(data.hostId);
-    } catch (error) {
-      console.log(error);
-    }
-  }
-
-  @SubscribeMessage('join_game')
-  async handleJoinGame(
+  @SubscribeMessage(SOCKET_EVENT.PLAYER_JOIN_ROOM)
+  async handlePlayerJoinRoom(
     @MessageBody()
     data: { gameId: string; playerName: string },
     @ConnectedSocket() client: Socket,
   ) {
     try {
-      const addPlayerDto: AddPlayerDTO = {
+      const addPlayerDTO: AddPlayerDTO = {
         playerName: data.playerName,
       };
-      const game = await this.gameService.joinGame(data.gameId, addPlayerDto);
-
+      const game = await this.gameService.joinGame(data.gameId, addPlayerDTO);
       client.join(data.gameId);
-      this.server
-        .to(game.hostId.toString())
-        .emit('host_waiting_room_updated', game);
+      this.server.to(data.gameId).emit(SOCKET_EVENT.PLAYER_JOINED_ROOM, game);
     } catch (error) {
-      this.server.to(client.id).emit('join_game_error', error.message);
+      this.server
+        .to(client.id)
+        .emit(SOCKET_EVENT_ERROR.PLAYER_JOIN_ROOM_ERROR, error.message);
     }
   }
 
-  @OnEvent('start_game')
+  // This event is used for update game status to in-progress
+  @SubscribeMessage(SOCKET_EVENT.START_GAME)
   async handleStartGame(@MessageBody() data: { gameId: string }) {
     try {
-      await this.gameService.emitNextQuestion(data.gameId);
+      await this.gameService.startGame(data.gameId);
     } catch (error) {
-      this.server.to(data.gameId).emit('start_game_error', error.message);
-    }
-  }
-
-  @OnEvent('new_question')
-  async handleClientNewQuestion(
-    @MessageBody()
-    data: {
-      id: string;
-      hostId: string;
-      questionType: string;
-      currentQuestionIndex: number;
-      question: string;
-      answerList: any;
-      timeLimit: number;
-    },
-  ) {
-    try {
-      this.server.to(data.id).emit('player_new_question', data);
-      this.server.to(data.hostId).emit('host_new_question', data);
-    } catch (error) {
-      this.server.to(data.id).emit('new_question_error', error.message);
-    }
-  }
-
-  @OnEvent('top_players')
-  async handleTopPlayers(
-    @MessageBody() data: { id: string; hostId: string; topPlayers: any },
-    // topPlayers: [{
-    //    playerName: string;
-    //    score: number;
-    //    results: []
-    //    currentQuestionIndex: number;
-    // }]
-  ) {
-    console.log(data.topPlayers);
-    try {
-      this.server.to(data.id).emit('player_leaderboard_top_5', data.topPlayers);
       this.server
-        .to(data.hostId)
-        .emit('host_leaderboard_top_5', data.topPlayers);
-    } catch (error) {
-      this.server.to(data.id).emit('top_players_error', error.message);
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.HOST_START_GAME_ERROR, error.message);
     }
   }
 
-  @OnEvent('finish_game')
-  async handleGameFinished(
-    @MessageBody() data: { id: string; hostId: string; topPlayers: any },
-    // topPlayers: [{
-    //    playerName: string;
-    //    score: number;
-    //    results: []
-    //    currentQuestionIndex: number;
-    // }]
-    @ConnectedSocket() client: Socket,
-  ) {
+  // This event is used for the host to send the question to all players
+  @SubscribeMessage(SOCKET_EVENT.NEW_QUESTION)
+  async handleNewQuestion(@MessageBody() data: { gameId: string }) {
     try {
-      this.server.to(data.id).emit('player_game_finished', data.topPlayers);
-      this.server.to(data.hostId).emit('host_game_finished', data.topPlayers);
+      const game = await this.gameService.getGameById(data.gameId);
+
+      const question = await this.gameService.nextQuestion(data.gameId);
+      if (!question) {
+        this.server
+          .to(data.gameId)
+          .emit(SOCKET_EVENT.HOST_FINISH_GAME, { gameId: data.gameId });
+        return;
+      }
+
+      const payload = {
+        id: data.gameId,
+        questionType: question.questionType,
+        currentQuestionIndex: game.currentQuestionIndex,
+        question: question.question,
+        answerList: question.answerList,
+        timeLimit: question.answerTime * 1000,
+        timeStarted: Date.now(),
+      };
+
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.PLAYER_GET_QUESTION, payload);
+      this.server.to(data.gameId).emit(SOCKET_EVENT.HOST_GET_QUESTION, payload);
+      let countDown = question.answerTime;
+
+      if (this.intervals.has(data.gameId)) {
+        clearInterval(this.intervals.get(data.gameId));
+        this.intervals.delete(data.gameId);
+      }
+
+      if (!this.intervals.has(data.gameId)) {
+        const interval = setInterval(async () => {
+          countDown--;
+          this.server
+            .to(data.gameId)
+            .emit(SOCKET_EVENT.TIMER_UDPATE, { timeLeft: countDown });
+
+          if (countDown <= 0) {
+            this.handleQuestionTimeUp(data.gameId);
+          }
+        }, 1000);
+        this.intervals.set(data.gameId, interval);
+      }
     } catch (error) {
-      this.server.to(client.id).emit('game_finished_error', error.message);
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.NEW_QUESTION_ERROR, error.message);
     }
   }
 
-  @SubscribeMessage('player_submit_answer')
+  // This function will use to broadcast client that question end up.
+  // When get data from this event, client can emit data to some event like get_leaderboard or get_player_result
+  private async handleQuestionTimeUp(gameId: string) {
+    if (this.intervals.has(gameId)) {
+      clearInterval(this.intervals.get(gameId));
+      this.intervals.delete(gameId);
+    }
+    try {
+      this.server
+        .to(gameId)
+        .emit(SOCKET_EVENT.QUESTION_TIME_UP, { gameId: gameId });
+    } catch (error) {
+      this.server
+        .to(gameId)
+        .emit(SOCKET_EVENT_ERROR.QUESTION_TIME_UP_ERROR, error.message);
+    }
+  }
+
+  // This event is used for the host to end the question early
+  @SubscribeMessage(SOCKET_EVENT.END_QUESTION_EARLY)
+  async handleEndQuestionEarly(@MessageBody() data: { gameId: string }) {
+    this.handleQuestionTimeUp(data.gameId);
+  }
+
+  // This event is used for the host to get player answers
+  @SubscribeMessage(SOCKET_EVENT.PLAYER_SUBMIT_ANSWER)
   async handleSubmitAnswer(
     @MessageBody()
     data: {
@@ -147,10 +157,78 @@ export class GameGateway {
       playerAnswer: PlayerAnswerDTO;
     },
   ) {
-    await this.gameService.processAnswer(
-      data.gameId,
-      data.playerName,
-      data.playerAnswer,
-    );
+    try {
+      await this.gameService.processAnswer(
+        data.gameId,
+        data.playerName,
+        data.playerAnswer,
+      );
+    } catch (error) {
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.PLAYER_SUBMIT_ANSWER_ERROR, error.message);
+    }
+  }
+
+  // This event is used for the client to get current leaderboard
+  @SubscribeMessage(SOCKET_EVENT.GET_LEADERBOARD)
+  async handleGetLeaderboard(@MessageBody() data: { gameId: string }) {
+    try {
+      const leaderboard = await this.gameService.handleQuestionTimeout(
+        data.gameId,
+      );
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.HOST_CURRENT_LEADERBOARD, leaderboard);
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.PLAYER_CURRENT_LEADERBOARD, leaderboard);
+    } catch (error) {
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.GET_LEADERBOARD_ERROR, error.message);
+    }
+  }
+
+  // This event is used for the client to get player's result
+  @SubscribeMessage(SOCKET_EVENT.GET_PLAYER_RESULT)
+  async handleGetPlayerResult(
+    @MessageBody()
+    data: {
+      gameId: string;
+      playerName: string;
+    },
+  ) {
+    try {
+      const playerResult = await this.gameService.getPlayerResults(
+        data.gameId,
+        data.playerName,
+      );
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.PLAYER_RESULT, playerResult);
+    } catch (error) {
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.GET_PLAYER_RESULT_ERROR, error.message);
+    }
+  }
+
+  // This event is used for the host to finish the game and show final leaderboard
+  @SubscribeMessage(SOCKET_EVENT.FINISH_GAME)
+  async handleHostFinishGame(@MessageBody() data: { gameId: string }) {
+    try {
+      const leaderboard = await this.gameService.finishGame(data.gameId);
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.HOST_FINAL_LEADERBOARD, leaderboard);
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT.PLAYER_FINAL_LEADERBOARD, leaderboard);
+    } catch (error) {
+      this.server
+        .to(data.gameId)
+        .emit(SOCKET_EVENT_ERROR.FINISH_GAME_ERROR, error.message);
+    }
   }
 }
